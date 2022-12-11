@@ -1,0 +1,42 @@
+#!/usr/bin/env sh 
+
+while true; do
+    # check if initialized
+    if [ ! -f ~/oci-create.env ]; then
+        sleep 1
+        continue
+    fi
+    
+    . ~/oci-create.env
+    
+    # check last run time
+    if [ -f ~/oci-create.last ]; then
+        last_run=$(cat ~/oci-create.last)
+    fi
+    last_run=${last_run:=0}
+    if [ $(date +%s) -lt $((last_run + $interval)) ]; then
+        sleep 1
+        continue
+    fi
+    
+    date +%s > ~/oci-create.last
+    echo "Creating OCI instance"
+    echo "{\"ocpus\": $ocpu_count, \"memoryInGBs\": $memory_in_gbs}" > ~/oci-create-shape-conf.json
+    oci compute instance launch \
+        --availability-domain $domain \
+        --compartment-id $tenancy \
+        --subnet-id $subnet \
+        --shape $shape \
+        --shape-config file://~/oci-create-shape-conf.json \
+        --boot-volume-size-in-gbs $boot_vol_size_in_gbs\
+        --image-id $image \
+        --ssh-authorized-keys-file $pubkey \
+        --display-name $display_name
+
+    if [ $? -eq 0 ]; then
+        echo "Job completed"
+        exit 0
+    else
+        echo "Job failed, retry after $interval seconds"
+    fi
+done
