@@ -28,10 +28,10 @@ while true; do
         --subnet-id $subnet \
         --shape $shape \
         --shape-config file://~/oci-create-shape-conf.json \
-        --boot-volume-size-in-gbs $boot_vol_size_in_gbs\
+        --boot-volume-size-in-gbs $boot_vol_size_in_gbs \
         --image-id $image \
         --ssh-authorized-keys-file $pubkey \
-        --display-name $display_name
+        ${display_name:+--display-name "$display_name"}
 
     if [ $? -eq 0 ]; then
         echo "Job completed"
