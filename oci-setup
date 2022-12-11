@@ -1,0 +1,186 @@
+#!/usr/bin/env sh
+
+trap 'exit 0' 2
+
+oci_config_file=${OCI_CLI_RC_FILE:=~/.oci/config}
+
+# check oci config file
+if [ ! -f $oci_config_file ]; then
+    echo -e "\033[0;31mMissing file $oci_config_file. Abort. \033[0m"
+    exit 1
+fi
+
+# read oci config
+tenancy=$(awk -F "=" '/tenancy/ {print $2}' $oci_config_file | tr -d ' ')
+key_file=$(awk -F "=" '/key_file/ {print $2}' $oci_config_file | tr -d ' ')
+eval key_file=$key_file
+
+# fix file permission
+oci setup repair-file-permissions --file $oci_config_file
+oci setup repair-file-permissions --file $key_file
+
+# check api key file
+if [ ! -f $key_file ]; then
+    echo -e "\033[0;31mMissing file $key_file. Abort. \033[0m"
+    exit 1
+fi
+
+# prompt availability domain
+domain_list_json=$(oci iam availability-domain list --all --compartment-id=$tenancy)
+domain_list=$(jq -r '.data[].name' <<< $domain_list_json | awk '{print NR-1 "\t" $s}')
+domain_index_max=$(($(wc -l <<< $domain_list) - 1))
+
+while true; do
+    echo -ne "Available domains:\n$domain_list\nPlease select the availability domain [0-$domain_index_max]: "
+    read answer
+    if [ -z "${answer//[0-9]}" ] && [ "$answer" -ge "0" ] && [ "$answer" -le "$domain_index_max" ]; then break; fi
+done
+
+domain=$(jq -r ".data[$answer].name" <<< $domain_list_json)
+
+# prompt subnet
+subnet_list_json=$(oci network subnet list --all --compartment-id=$tenancy)
+subnet_list=$(jq -r '.data[]."display-name"' <<< $subnet_list_json | awk '{print NR-1 "\t" $s}')
+subnet_index_max=$(($(wc -l <<< subnet_list) - 1))
+
+# prompt to create a default subnet if not exists
+if [ $subnet_index_max -eq -1 ]; then
+    while true; do
+        echo -ne "No subnet found, create a default one? [yn]: "
+        read answer
+        case $answer in
+            [Yy]* ) 
+                oci network subnet create --cidr-block '10.0.0.0/24'
+                subnet_list_json=$(oci network subnet list --compartment-id=$tenancy)
+                subnet_list=$(jq -r '.data[]."display-name"' <<< $subnet_list_json | awk '{print NR-1 "\t" $s}')
+                subnet_index_max=$(($(wc -l <<< subnet_list) - 1))
+                break;;
+            [Nn]* ) 
+                echo -e "\033[1;33mCannot proceed without subnet. Abort. \033[0m"
+                exit 1
+                ;;
+            * ) 
+                echo -e "Please answer with 'y' or 'n'"
+                ;;
+        esac
+    done
+fi
+
+while true; do
+    echo -ne "Subnet:\n$subnet_list\nPlease select the subnet [0-$subnet_index_max]: "
+    read answer
+    if [ -z "${answer//[0-9]}" ] && [ "$answer" -ge "0" ] && [ "$answer" -le "$subnet_index_max" ]; then break; fi
+done
+
+subnet=$(jq -r ".data[$answer].id" <<< $subnet_list_json)
+subnet_name=$(jq -r ".data[$answer].\"display-name\"" <<< $subnet_list_json)
+
+# prompt instance shape
+shape_list_json=$(oci compute shape list --all --compartment-id=$tenancy)
+shape_list=$(jq -r '.data[].shape' <<< $shape_list_json | awk '{print NR-1 "\t" $s}')
+shape_index_max=$(($(wc -l <<< $shape_list) - 1))
+
+while true; do
+    echo -ne "Instance shapes:\n$shape_list\nPlease select the instance shape [0-$shape_index_max]: "
+    read answer
+    if [ -z "${answer//[0-9]}" ] && [ "$answer" -ge "0" ] && [ "$answer" -le "$shape_index_max" ]; then break; fi
+done
+
+shape=$(jq -r ".data[$answer].shape" <<< $shape_list_json)
+ocpu_min=$(jq -r ".data[$answer].\"ocpu-options\".min" <<< $shape_list_json)
+ocpu_min=${ocpu_min%.*}
+ocpu_max=$(jq -r ".data[$answer].\"ocpu-options\".max" <<< $shape_list_json)
+ocpu_max=${ocpu_max%.*}
+default_ocpu=$(jq -r ".data[$answer].ocpus" <<< $shape_list_json)
+default_memory=$(jq -r ".data[$answer].\"memory-in-gbs\"" <<< $shape_list_json)
+
+# prompt cpu
+while true; do
+    echo -ne "Please specify the CPU count (default: $default_ocpu) [$ocpu_min-$ocpu_max]: "
+    read answer
+    answer=${answer:=$default_ocpu}
+    if [ -z "${answer//[0-9]}" ] && [ "$answer" -ge "$ocpu_min" ] && [ "$answer" -le "$ocpu_max" ]; then break; fi
+done
+
+ocpu_count=$answer
+
+# prompt ram
+while true; do
+    echo -ne "Please specify the memory in GB (default: $default_memory): "
+    read answer
+    answer=${answer:=$default_memory}
+    if [ -z "${answer//[0-9]}" ] && [ "$answer" -ge "0" ]; then break; fi
+done
+
+memory_in_gbs=$answer
+
+# prompt boot vol size
+while true; do
+    echo -ne "Please specify the boot volume size in GB [50-16384]: "
+    read answer
+    if [ -z "${answer//[0-9]}" ] && [ "$answer" -ge "50" ] && [ "$answer" -le "16384" ]; then break; fi
+done
+
+boot_vol_size_in_gbs=$answer
+
+# prompt image
+image_list_json=$(oci compute image list --all --compartment-id=$tenancy --shape=$shape)
+image_list=$(jq -r '.data[]."display-name"' <<< $image_list_json | awk '{print NR-1 "\t" $s}')
+image_index_max=$(($(wc -l <<< $image_list) - 1))
+
+while true; do
+    echo -ne "Available image:\n$image_list\nPlease select the image [0-$image_index_max]: "
+    read answer
+    if [ -z "${answer//[0-9]}" ] && [ "$answer" -ge "0" ] && [ "$answer" -le "$image_index_max" ]; then break; fi
+done
+
+image=$(jq -r ".data[$answer].id" <<< $image_list_json)
+image_name=$(jq -r ".data[$answer].\"display-name\"" <<< $image_list_json)
+
+# prompt pukey
+while true; do
+    echo -n 'Please specify the path to public key file used in instance SSH(default: /oracle/id_rsa.pub): '
+    read answer
+    answer=${answer:=/oracle/id_rsa.pub}
+    if [ -f $answer ]; then 
+        break
+    else
+        echo -e "\033[1;33mFile $answer does not exist.\n\033[0m"
+    fi
+done
+
+pubkey=$answer
+
+# prompt display name
+echo -n 'Please specify the display name of the instance: '
+read answer
+
+display_name=$answer
+
+# prompt executing interval
+while true; do
+    echo -n 'Please specify the retry interval in seconds (default 3600): '
+    read answer
+    answer=${answer:=3600}
+    if [ -z "${answer//[0-9]}" ] && [ "$answer" -ge "0" ]; then break; fi
+done
+
+interval=$answer
+
+# confirm config
+printf "Domain: %s\nSubnet: %s\nShape: %s\nCPU: %d\nMemory: %d\nBoot volume size: %s\nImage: %s\nPublic key: %s\nDisplay name: %s\nRetry interval: %d\n" $domain $subnet_name $shape $ocpu_count $memory_in_gbs $boot_vol_size_in_gbs $image_name $pubkey $display_name $interval
+
+while true; do
+    echo -n 'Confirm configuration? [yn]: '
+    read answer
+    case $answer in
+        [Yy]* )
+            break;;
+        [Nn]* ) echo -e "\033[1;33mUser abort operation. \033[0m"
+            exit 1
+            ;;
+        * ) echo 'Please answer with "y" or "n"';;
+    esac
+done
+
+echo -e "tenancy=$tenancy\ndomain=$domain\nsubnet=$subnet\nshape=$shape\nocpu_count=$ocpu_count\nmemory_in_gbs=$memory_in_gbs\nboot_vol_size_in_gbs=$boot_vol_size_in_gbs\nimage=$image\npubkey=$pubkey\ndisplay_name=$display_name\ninterval=$interval"  > ~/oci-create.env
