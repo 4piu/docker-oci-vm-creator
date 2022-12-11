@@ -24,7 +24,7 @@ docker run -d \
 -v /path/to/config:/oracle/.oci/config \
 -v /path/to/id_rsa.pub:/oracle/id_rsa.pub \
 --name oci-auto \
-oci-vm-creator
+d0v0b/oci-vm-creator
 ```
 
 Setup inside the container (interactive):
@@ -34,3 +34,9 @@ docker exec -it oci-auto oci-setup
 ```
 
 Done. 
+
+Follow logs:
+
+```sh
+docker logs -f oci-auto
+```
